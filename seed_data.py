@@ -2,6 +2,7 @@ from datetime import date, timedelta
 from sqlalchemy.orm import Session
 from database import SessionLocal, engine
 import models
+from datetime import datetime
 
 
 def init_db():
@@ -11,6 +12,7 @@ def init_db():
         if db.query(models.School).count() == 0:
             seed_data(db)
         recompute_volunteer_hours(db)
+        seed_guardianships(db)
     finally:
         db.close()
 
@@ -752,3 +754,100 @@ def seed_data(db: Session):
     print(f"  - 讲解资格证: {db.query(models.VolunteerCertification).count()} 张")
     print(f"  - 服务记录: {db.query(models.ServiceRecord).count()} 条")
     print(f"  - 权益商品: {db.query(models.Benefit).count()} 个")
+
+
+def seed_guardianships(db: Session):
+    """为种子志愿者建立可追溯监护授权（幂等）：含共同监护、交接撤回、已过期示例。"""
+    if db.query(models.GuardianshipAuthorization).count() > 0:
+        return
+
+    from datetime import timedelta
+    from sqlalchemy import func
+
+    all_scopes = [s.value for s in models.GuardianshipScope]
+    now = datetime.utcnow()
+
+    def get_volunteer(name):
+        return db.query(models.Volunteer).filter(models.Volunteer.name == name).first()
+
+    def get_guardian(name, phone):
+        g = db.query(models.Guardian).filter(models.Guardian.phone == phone).first()
+        if not g:
+            g = models.Guardian(name=name, phone=phone)
+            db.add(g)
+            db.flush()
+        return g
+
+    def grant(name, phone, child, scopes, valid_from=None, valid_until=None):
+        g = get_guardian(name, phone)
+        latest = db.query(func.max(models.GuardianshipAuthorization.version)).filter(
+            models.GuardianshipAuthorization.guardian_id == g.id,
+            models.GuardianshipAuthorization.volunteer_id == child.id
+        ).scalar()
+        version = (latest or 0) + 1
+        auth = models.GuardianshipAuthorization(
+            guardian_id=g.id, volunteer_id=child.id, version=version,
+            valid_from=valid_from or now, valid_until=valid_until, granted_by="初始建档"
+        )
+        auth.scopes = set(scopes)
+        db.add(auth)
+        db.flush()
+        db.add(models.GuardianshipAudit(
+            authorization_id=auth.id, guardian_id=g.id, volunteer_id=child.id,
+            action=models.AuditAction.GRANT, auth_version=version,
+            guardian_name_snapshot=g.name, guardian_phone_snapshot=g.phone,
+            scopes_snapshot=auth.scopes_json, result="成功",
+            detail="初始监护授权", operated_at=auth.valid_from
+        ))
+        return g, auth
+
+    def revoke(auth, guardian, child, reason, at=None):
+        auth.status = models.AuthorizationStatus.REVOKED
+        auth.revoked_at = at or now
+        auth.revoke_reason = reason
+        db.add(models.GuardianshipAudit(
+            authorization_id=auth.id, guardian_id=guardian.id, volunteer_id=child.id,
+            action=models.AuditAction.REVOKE, auth_version=auth.version,
+            guardian_name_snapshot=guardian.name, guardian_phone_snapshot=guardian.phone,
+            scopes_snapshot=auth.scopes_json, result="成功", detail=reason,
+            operated_at=auth.revoked_at
+        ))
+
+    # 常规授权
+    g, _ = grant("赵先生", "13912345678", get_volunteer("赵小明"), all_scopes)
+    grant("钱女士", "13912345679", get_volunteer("钱朵朵"),
+          [models.GuardianshipScope.QUERY.value, models.GuardianshipScope.ENROLL_CONFIRM.value])
+    grant("孙先生", "13912345680", get_volunteer("孙浩然"), all_scopes)
+    grant("周女士", "13912345682", get_volunteer("周子轩"), all_scopes)
+    grant("王先生", "13912345685", get_volunteer("王浩宇"), all_scopes)
+    grant("吴先生", "13912345683", get_volunteer("吴雨桐"),
+          [models.GuardianshipScope.QUERY.value, models.GuardianshipScope.BENEFIT_CLAIM.value])
+
+    # 共同监护：李小萌由父母双方共同监护，范围不同
+    child = get_volunteer("李小萌")
+    grant("李先生", "13912345681", child, all_scopes)
+    grant("李女士", "13912345688", child, [models.GuardianshipScope.QUERY.value])
+
+    # 监护人交接：郑思琪的原监护授权已撤回，新监护人生效（旧版保留可追溯）
+    child = get_volunteer("郑思琪")
+    g_old, auth_old = grant("郑女士", "13912345684", child, all_scopes,
+                            valid_from=now - timedelta(days=400))
+    revoke(auth_old, g_old, child, "监护权变更，撤回原监护人全部授权",
+           at=now - timedelta(days=30))
+    grant("郑女士（新监护人）", "13912345699", child,
+          [models.GuardianshipScope.QUERY.value, models.GuardianshipScope.ENROLL_CONFIRM.value])
+
+    # 更换监护人投诉场景：陈雨欣原监护人授权已撤回，撤回后不应再能查看
+    child = get_volunteer("陈雨欣")
+    g_old, auth_old = grant("陈先生", "13912345686", child, [models.GuardianshipScope.QUERY.value],
+                            valid_from=now - timedelta(days=95))
+    revoke(auth_old, g_old, child, "更换监护人，撤回查看权限", at=now - timedelta(days=10))
+
+    # 已过期授权示例：韩佳怡
+    g_exp, auth_exp = grant("韩女士", "13912345687", get_volunteer("韩佳怡"),
+                            [models.GuardianshipScope.QUERY.value],
+                            valid_from=now - timedelta(days=60),
+                            valid_until=now - timedelta(days=1))
+    auth_exp.status = models.AuthorizationStatus.EXPIRED
+
+    db.commit()

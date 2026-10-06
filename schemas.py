@@ -734,6 +734,153 @@ class ParentLogin(BaseModel):
     volunteer_name: Optional[str] = None
 
 
+# ==================== 监护关系可追溯授权 ====================
+
+from models import GuardianshipScope, AuthorizationStatus, AuditAction  # noqa: E402
+
+
+class GuardianCreate(BaseModel):
+    name: Optional[str] = None
+    phone: str
+
+
+class GuardianLogin(BaseModel):
+    phone: str
+    name: Optional[str] = None
+
+
+class GuardianOut(BaseModel):
+    id: int
+    name: str
+    phone: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class AuthorizationGrant(BaseModel):
+    guardian_phone: str
+    guardian_name: Optional[str] = None
+    volunteer_id: int
+    scopes: List[str] = Field(..., description="授权操作范围：查询 / 报名确认 / 权益代领")
+    valid_from: Optional[datetime] = None
+    valid_until: Optional[datetime] = None
+    granted_by: Optional[str] = "运营管理员"
+
+
+class AuthorizationRevoke(BaseModel):
+    reason: Optional[str] = None
+
+
+class AuthorizationOut(BaseModel):
+    id: int
+    guardian_id: int
+    volunteer_id: int
+    version: int
+    scopes: List[str] = []
+    status: AuthorizationStatus
+    valid_from: datetime
+    valid_until: Optional[datetime] = None
+    granted_by: Optional[str] = None
+    revoke_reason: Optional[str] = None
+    revoked_at: Optional[datetime] = None
+    created_at: datetime
+    guardian: Optional[GuardianOut] = None
+    volunteer_name: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class GuardianshipAuditOut(BaseModel):
+    id: int
+    authorization_id: Optional[int] = None
+    guardian_id: Optional[int] = None
+    volunteer_id: int
+    action: AuditAction
+    auth_version: Optional[int] = None
+    guardian_name_snapshot: Optional[str] = None
+    guardian_phone_snapshot: Optional[str] = None
+    scopes_snapshot: Optional[str] = None
+    result: str
+    detail: Optional[str] = None
+    ref_type: Optional[str] = None
+    ref_id: Optional[str] = None
+    idempotency_key: Optional[str] = None
+    operated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class GuardianChildOut(BaseModel):
+    volunteer_id: int
+    name: str
+    school_name: Optional[str] = None
+    grade: Optional[str] = None
+    authorization_id: int
+    version: int
+    scopes: List[str] = []
+    valid_until: Optional[datetime] = None
+
+
+class GuardianLoginResult(BaseModel):
+    guardian: GuardianOut
+    children: List[GuardianChildOut] = []
+
+
+class GuardianEnrollConfirm(BaseModel):
+    guardian_phone: str
+    batch_id: int
+    idempotency_key: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class GuardianBenefitClaim(BaseModel):
+    guardian_phone: str
+    benefit_id: int
+    quantity: int = 1
+    delivery_info: Optional[str] = None
+    idempotency_key: Optional[str] = None
+
+
+class AuthorizationStateAt(BaseModel):
+    authorization_id: int
+    guardian_id: int
+    guardian_name: str
+    guardian_phone: str
+    version: int
+    scopes: List[str] = []
+    status: AuthorizationStatus
+    valid_from: datetime
+    valid_until: Optional[datetime] = None
+    revoked_at: Optional[datetime] = None
+
+
+class ReconstructEvent(BaseModel):
+    audit_id: int
+    operated_at: datetime
+    guardian_name: Optional[str] = None
+    guardian_phone: Optional[str] = None
+    action: str
+    auth_version: Optional[int] = None
+    authorization_id: Optional[int] = None
+    scopes: List[str] = []
+    result: str
+    detail: Optional[str] = None
+    ref_type: Optional[str] = None
+    ref_id: Optional[str] = None
+
+
+class ReconstructReport(BaseModel):
+    volunteer_id: int
+    volunteer_name: str
+    at: datetime
+    active_authorizations: List[AuthorizationStateAt] = []
+    events: List[ReconstructEvent] = []
+
+
 class ParentVolunteerSummary(BaseModel):
     volunteer_id: int
     name: str

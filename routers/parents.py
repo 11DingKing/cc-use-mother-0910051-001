@@ -2,25 +2,60 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import List
+from datetime import datetime
 from database import get_db
 import models, schemas
+from routers import guardianship
 
 router = APIRouter(prefix="/api/parents", tags=["家长入口"])
 
 
+def _ensure_can_view(db: Session, volunteer: models.Volunteer, parent_phone: str = None):
+    """
+    旧版家长入口同样依据“当时有效的授权版本”放行：
+    - 不传手机号视为内部/管理调用，保持兼容；
+    - 传了手机号则必须存在当前有效、含「查询」范围、且未撤回/未过期的授权。
+    """
+    if not parent_phone:
+        return
+    try:
+        guardianship.require_authorization(
+            db, parent_phone, volunteer.id, models.GuardianshipScope.QUERY)
+    except guardianship.AuthorizationError as e:
+        raise HTTPException(status_code=403, detail=e.reason)
+
+
 @router.post("/login")
 def parent_login(login_data: schemas.ParentLogin, db: Session = Depends(get_db)):
-    query = db.query(models.Volunteer).filter(
-        models.Volunteer.parent_phone == login_data.parent_phone
-    )
+    """
+    监护人登录：以当前“有效授权版本”为准返回可查看的孩子。
+    更换监护人后，原监护人手机号即便仍残留在孩子档案里，也不会再列出该孩子。
+    """
+    guardian = guardianship.get_guardian_by_phone(db, login_data.parent_phone)
+    if not guardian:
+        raise HTTPException(status_code=404, detail="未找到相关信息，请检查手机号")
 
-    if login_data.volunteer_name:
-        query = query.filter(models.Volunteer.name == login_data.volunteer_name)
-
-    volunteers = query.all()
+    now = datetime.utcnow()
+    volunteers = []
+    seen = set()
+    for auth in db.query(models.GuardianshipAuthorization).filter(
+            models.GuardianshipAuthorization.guardian_id == guardian.id).all():
+        # 只看各监护链在当前的“决定版本”，旧版本不单独授权
+        deciding = guardianship.effective_authorization(db, guardian.id, auth.volunteer_id, now)
+        if deciding.id != auth.id or not guardianship.version_grants_at(auth, now):
+            continue
+        if models.GuardianshipScope.QUERY.value not in auth.scopes:
+            continue
+        v = auth.volunteer
+        if v.id in seen:
+            continue
+        seen.add(v.id)
+        if login_data.volunteer_name and v.name != login_data.volunteer_name:
+            continue
+        volunteers.append(v)
 
     if not volunteers:
-        raise HTTPException(status_code=404, detail="未找到相关信息，请检查手机号和孩子姓名")
+        raise HTTPException(status_code=404, detail="未找到相关信息，或当前没有有效的查看授权")
 
     return {
         "volunteers": [
@@ -41,8 +76,7 @@ def get_parent_view(volunteer_id: int, parent_phone: str = None, db: Session = D
     if not volunteer:
         raise HTTPException(status_code=404, detail="志愿者不存在")
 
-    if parent_phone and volunteer.parent_phone != parent_phone:
-        raise HTTPException(status_code=403, detail="无权查看该信息")
+    _ensure_can_view(db, volunteer, parent_phone)
 
     star_level_name = volunteer.star_level.name if volunteer.star_level else None
 
@@ -139,8 +173,7 @@ def get_parent_service_records(volunteer_id: int, parent_phone: str = None,
     if not volunteer:
         raise HTTPException(status_code=404, detail="志愿者不存在")
 
-    if parent_phone and volunteer.parent_phone != parent_phone:
-        raise HTTPException(status_code=403, detail="无权查看该信息")
+    _ensure_can_view(db, volunteer, parent_phone)
 
     service_records = db.query(models.ServiceRecord).filter(
         models.ServiceRecord.volunteer_id == volunteer_id
@@ -170,8 +203,7 @@ def get_parent_training_records(volunteer_id: int, parent_phone: str = None,
     if not volunteer:
         raise HTTPException(status_code=404, detail="志愿者不存在")
 
-    if parent_phone and volunteer.parent_phone != parent_phone:
-        raise HTTPException(status_code=403, detail="无权查看该信息")
+    _ensure_can_view(db, volunteer, parent_phone)
 
     enrollments = db.query(models.Enrollment).filter(
         models.Enrollment.volunteer_id == volunteer_id
@@ -216,8 +248,7 @@ def get_parent_certificates(volunteer_id: int, parent_phone: str = None,
     if not volunteer:
         raise HTTPException(status_code=404, detail="志愿者不存在")
 
-    if parent_phone and volunteer.parent_phone != parent_phone:
-        raise HTTPException(status_code=403, detail="无权查看该信息")
+    _ensure_can_view(db, volunteer, parent_phone)
 
     return db.query(models.StarCertificate).filter(
         models.StarCertificate.volunteer_id == volunteer_id,
@@ -233,8 +264,7 @@ def get_parent_points_records(volunteer_id: int, parent_phone: str = None,
     if not volunteer:
         raise HTTPException(status_code=404, detail="志愿者不存在")
 
-    if parent_phone and volunteer.parent_phone != parent_phone:
-        raise HTTPException(status_code=403, detail="无权查看该信息")
+    _ensure_can_view(db, volunteer, parent_phone)
 
     return db.query(models.PointsRecord).filter(
         models.PointsRecord.volunteer_id == volunteer_id
@@ -249,8 +279,7 @@ def get_parent_exchanges(volunteer_id: int, parent_phone: str = None,
     if not volunteer:
         raise HTTPException(status_code=404, detail="志愿者不存在")
 
-    if parent_phone and volunteer.parent_phone != parent_phone:
-        raise HTTPException(status_code=403, detail="无权查看该信息")
+    _ensure_can_view(db, volunteer, parent_phone)
 
     return db.query(models.BenefitExchange).filter(
         models.BenefitExchange.volunteer_id == volunteer_id
