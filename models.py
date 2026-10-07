@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Date, DateTime, ForeignKey, Text, Float, Enum as SAEnum, Boolean
+from sqlalchemy import Column, Integer, String, Date, DateTime, ForeignKey, Text, Float, Enum as SAEnum, Boolean, UniqueConstraint
 from sqlalchemy.orm import relationship
 from datetime import datetime, date
 from database import Base
@@ -122,6 +122,8 @@ class Volunteer(Base):
     points_records = relationship("PointsRecord", back_populates="volunteer")
     benefit_exchanges = relationship("BenefitExchange", back_populates="volunteer")
     star_certificates = relationship("StarCertificate", back_populates="volunteer")
+    guardian_authorizations = relationship("GuardianAuthorization", back_populates="volunteer")
+    guardian_operations = relationship("GuardianOperation", back_populates="volunteer")
 
 
 class AssessmentTopic(Base):
@@ -437,3 +439,109 @@ class StarCertificate(Base):
 
     volunteer = relationship("Volunteer", back_populates="star_certificates")
     star_level = relationship("StarLevel")
+
+
+# ==================== 监护授权（版本化、可追溯） ====================
+
+class AuthorizationStatus(str, enum.Enum):
+    ACTIVE = "有效"
+    REVOKED = "已撤回"
+    SUPERSEDED = "已被新版本取代"
+    EXPIRED = "已过期"
+
+
+class GuardianRelation(str, enum.Enum):
+    PARENT = "父母"
+    GRANDPARENT = "祖父母"
+    OTHER = "其他法定监护人"
+
+
+class OperationType(str, enum.Enum):
+    VIEW_CHILD = "查看孩子信息"
+    ENROLL_CONFIRM = "报名确认"
+    BENEFIT_CLAIM = "权益代领"
+
+
+class OperationResult(str, enum.Enum):
+    SUCCESS = "成功"
+    DENIED = "已拒绝"
+    DUPLICATE = "重复提交"
+    BUSINESS_FAILED = "业务未通过"
+
+
+class Guardian(Base):
+    """监护人身份（手机号为登录标识），与孩子的关系通过授权版本表达，不做静态绑定。"""
+    __tablename__ = "guardians"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(50), nullable=False)
+    phone = Column(String(20), nullable=False, unique=True, index=True)
+    id_card_no = Column(String(30))
+    relation = Column(SAEnum(GuardianRelation), default=GuardianRelation.PARENT)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    authorizations = relationship("GuardianAuthorization", back_populates="guardian")
+    operations = relationship("GuardianOperation", back_populates="guardian")
+
+
+class GuardianAuthorization(Base):
+    """
+    监护授权版本。授权内容只追加、不修改：
+    - 每次授权/变更范围/交接产生一个新版本（同一 grant_seq 内版本号递增）；
+    - 撤回只置状态与 revoked_at，历史版本保留，撤回前已完成操作仍可回溯依据；
+    - 共同监护 = 同一孩子存在多个各自独立的 ACTIVE 授权链。
+    """
+    __tablename__ = "guardian_authorizations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    grant_seq = Column(Integer, nullable=False, index=True)
+    version_no = Column(Integer, nullable=False, default=1)
+    guardian_id = Column(Integer, ForeignKey("guardians.id"), nullable=False, index=True)
+    volunteer_id = Column(Integer, ForeignKey("volunteers.id"), nullable=False, index=True)
+    relation = Column(SAEnum(GuardianRelation), default=GuardianRelation.PARENT)
+    scopes = Column(String(200), nullable=False, default="view,enroll,benefit")
+    valid_from = Column(DateTime, nullable=False, default=datetime.utcnow)
+    valid_until = Column(DateTime, nullable=True)
+    status = Column(SAEnum(AuthorizationStatus), nullable=False, default=AuthorizationStatus.ACTIVE, index=True)
+    superseded_by = Column(Integer, ForeignKey("guardian_authorizations.id"), nullable=True)
+    revoked_at = Column(DateTime, nullable=True)
+    revoke_reason = Column(String(200))
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("volunteer_id", "grant_seq", "version_no", name="uq_auth_child_grant_version"),
+    )
+
+    guardian = relationship("Guardian", back_populates="authorizations")
+    volunteer = relationship("Volunteer", back_populates="guardian_authorizations")
+    successor = relationship("GuardianAuthorization", remote_side=[id], foreign_keys=[superseded_by])
+    operations = relationship("GuardianOperation", back_populates="authorization")
+
+
+class GuardianOperation(Base):
+    """
+    监护人操作审计流水：只追加。每条记录保存授权快照（版本号、范围、有效期、
+    授权状态），使任何历史时刻都能还原"谁凭哪一版授权看过/办过什么"。
+    被拒绝的请求同样留痕（authorization_id 可空）。
+    """
+    __tablename__ = "guardian_operations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    guardian_id = Column(Integer, ForeignKey("guardians.id"), nullable=True, index=True)
+    volunteer_id = Column(Integer, ForeignKey("volunteers.id"), nullable=False, index=True)
+    authorization_id = Column(Integer, ForeignKey("guardian_authorizations.id"), nullable=True, index=True)
+    operation_type = Column(SAEnum(OperationType), nullable=False, index=True)
+    result = Column(SAEnum(OperationResult), nullable=False)
+    idempotency_key = Column(String(80), nullable=True, unique=True)
+    target_type = Column(String(50))
+    target_id = Column(String(50))
+    detail = Column(Text)
+    auth_version_no = Column(Integer, nullable=True)
+    auth_scopes_snapshot = Column(String(200), nullable=True)
+    auth_valid_from = Column(DateTime, nullable=True)
+    auth_valid_until = Column(DateTime, nullable=True)
+    operated_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+    guardian = relationship("Guardian", back_populates="operations")
+    authorization = relationship("GuardianAuthorization", back_populates="operations")
+    volunteer = relationship("Volunteer", back_populates="guardian_operations")

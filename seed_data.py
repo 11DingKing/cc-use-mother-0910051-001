@@ -733,6 +733,24 @@ def seed_data(db: Session):
         ),
     ]
     db.add_all(benefits)
+    db.flush()
+
+    # 为现有家长建立 v1 监护授权（替代静态手机号绑定），权限为全部范围、长期有效
+    for seq, v in enumerate(volunteers, start=1):
+        if not v.parent_phone:
+            continue
+        guardian = models.Guardian(
+            name=v.parent_name or f"监护人{v.parent_phone[-4:]}",
+            phone=v.parent_phone,
+            relation=models.GuardianRelation.PARENT,
+        )
+        db.add(guardian)
+        db.flush()
+        db.add(models.GuardianAuthorization(
+            grant_seq=seq, version_no=1, guardian_id=guardian.id,
+            volunteer_id=v.id, relation=models.GuardianRelation.PARENT,
+            scopes="view,enroll,benefit", status=models.AuthorizationStatus.ACTIVE,
+        ))
 
     db.commit()
     print("种子数据创建完成！")

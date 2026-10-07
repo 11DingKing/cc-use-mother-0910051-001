@@ -734,6 +734,147 @@ class ParentLogin(BaseModel):
     volunteer_name: Optional[str] = None
 
 
+# ==================== 监护授权 ====================
+
+class AuthorizationGrant(BaseModel):
+    volunteer_id: int
+    phone: str
+    name: Optional[str] = None
+    relation: Optional[str] = "父母"
+    scopes: List[str] = ["view", "enroll", "benefit"]
+    valid_from: Optional[datetime] = None
+    valid_until: Optional[datetime] = None
+
+
+class AuthorizationNewVersion(BaseModel):
+    scopes: Optional[List[str]] = None
+    valid_until: Optional[datetime] = None
+
+
+class AuthorizationRevoke(BaseModel):
+    reason: Optional[str] = None
+
+
+class GuardianRevoke(BaseModel):
+    guardian_id: Optional[int] = None
+    phone: Optional[str] = None
+    reason: Optional[str] = None
+
+
+class AuthorizationHandover(BaseModel):
+    to_phone: str
+    to_name: Optional[str] = None
+    relation: Optional[str] = "父母"
+    scopes: List[str] = ["view", "enroll", "benefit"]
+    valid_until: Optional[datetime] = None
+    reason: Optional[str] = "监护人交接"
+
+
+class GuardianLogin(BaseModel):
+    phone: str
+
+
+class GuardianEnrollConfirm(BaseModel):
+    batch_id: int
+    idempotency_key: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class GuardianBenefitClaim(BaseModel):
+    benefit_id: int
+    quantity: int = 1
+    delivery_info: Optional[str] = None
+    idempotency_key: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class AuthorizationOut(BaseModel):
+    id: int
+    grant_seq: int
+    version_no: int
+    guardian_id: int
+    guardian_name: Optional[str] = None
+    guardian_phone: Optional[str] = None
+    volunteer_id: int
+    relation: Optional[str] = None
+    scopes: List[str] = []
+    valid_from: datetime
+    valid_until: Optional[datetime] = None
+    status: str
+    superseded_by: Optional[int] = None
+    revoked_at: Optional[datetime] = None
+    revoke_reason: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class GuardianOperationOut(BaseModel):
+    id: int
+    guardian_id: Optional[int] = None
+    guardian_name: Optional[str] = None
+    guardian_phone: Optional[str] = None
+    volunteer_id: int
+    volunteer_name: Optional[str] = None
+    authorization_id: Optional[int] = None
+    operation_type: str
+    result: str
+    idempotency_key: Optional[str] = None
+    target_type: Optional[str] = None
+    target_id: Optional[str] = None
+    detail: Optional[str] = None
+    auth_version_no: Optional[int] = None
+    auth_scopes_snapshot: Optional[str] = None
+    auth_valid_from: Optional[datetime] = None
+    auth_valid_until: Optional[datetime] = None
+    operated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class GuardianChildOut(BaseModel):
+    volunteer_id: int
+    name: Optional[str] = None
+    school_name: Optional[str] = None
+    grade: Optional[str] = None
+    authorization_id: int
+    version_no: int
+    scopes: List[str] = []
+    valid_from: datetime
+    valid_until: Optional[datetime] = None
+
+
+class HandoverOut(BaseModel):
+    new_authorization: AuthorizationOut
+    revoked_authorization_ids: List[int]
+
+
+class EnrollConfirmOut(BaseModel):
+    enrollment_id: int
+    volunteer_id: int
+    batch_id: int
+    status: str
+    operation_id: int
+    authorization_id: int
+    authorization_version_no: int
+    idempotent: bool = False
+
+
+class BenefitClaimOut(BaseModel):
+    exchange_id: int
+    volunteer_id: int
+    benefit_id: int
+    points_spent: int
+    quantity: int
+    status: str
+    operation_id: int
+    authorization_id: int
+    authorization_version_no: int
+    idempotent: bool = False
+
+
 class ParentVolunteerSummary(BaseModel):
     volunteer_id: int
     name: str

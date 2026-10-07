@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from database import engine, Base
 from seed_data import init_db
-from routers import volunteers, trainings, assessments, time_slots, service_records, base_data, stats, points, benefits, star_certificates, parents
+from routers import volunteers, trainings, assessments, time_slots, service_records, base_data, stats, points, benefits, star_certificates, parents, guardianship
 
 Base.metadata.create_all(bind=engine)
 init_db()
@@ -32,6 +32,8 @@ app.include_router(points.router)
 app.include_router(benefits.router)
 app.include_router(star_certificates.router)
 app.include_router(parents.router)
+app.include_router(guardianship.router)
+app.include_router(guardianship.admin)
 
 
 @app.get("/", tags=["系统"])
@@ -59,6 +61,7 @@ def root():
             "权益管理 - 权益商品、兑换记录、兑换统计 (/api/benefits)",
             "星级证书 - 自动发放、证书查询 (/api/star-certificates)",
             "家长入口 - 查看孩子报名、培训、服务、积分、证书 (/api/parents)",
+            "监护授权 - 版本化授权、监护人查询/报名确认/权益代领、撤回交接、时间点还原 (/api/guardian, /api/admin/guardianship)",
             "基础数据 - 学校 & 星级 (/api/schools, /api/star-levels)",
             "统计分析 - 含各期培训出勤率与考核一次通过率、积分发放与兑换统计 (/api/stats)"
         ]
